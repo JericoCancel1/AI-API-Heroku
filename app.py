@@ -1,28 +1,34 @@
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request
 from flask_cors import CORS, cross_origin
 from io import BytesIO
 from PIL import Image
-import tensorflow as tf
 import numpy as np
-import matplotlib.pyplot as plt
-from tensorflow.keras.models import load_model
-import tensorflow_addons as tfa
+import os
 
 app = Flask(__name__)
 CORS(app)
+
 @app.route('/')
 def index():
     return "Flask Heroku App"
-# Custom objects required for the model
-custom_objects = {"Addons>TripletSemiHardLoss": tfa.losses.TripletSemiHardLoss}
-siamese_model = load_model("siamese_model.h5", custom_objects=custom_objects)
-embedding_model = siamese_model.layers[3]  # Update this index as per your model
 
-# Load and preprocess the dataset
-dataset_path = "D:/dataset"  # Update with your dataset path
-target_size = (28, 28)  # Ensure consistency with your model's input size
+# Load TensorFlow and other dependencies dynamically
+def load_dependencies():
+    import tensorflow as tf
+    import tensorflow_addons as tfa
+    return tf, tfa
 
+# Load models dynamically
+def load_models():
+    tf, tfa = load_dependencies()
+    custom_objects = {"Addons>TripletSemiHardLoss": tfa.losses.TripletSemiHardLoss}
+    siamese_model = tf.keras.models.load_model("siamese_model.h5", custom_objects=custom_objects)
+    embedding_model = siamese_model.layers[3]  # Update this index as per your model
+    return siamese_model, embedding_model
+
+# Preprocess dataset
 def preprocess_dataset(dataset_path, target_size):
+    tf, _ = load_dependencies()
     dataset = tf.keras.utils.image_dataset_from_directory(
         dataset_path,
         labels=None,  # No labels needed
@@ -34,11 +40,14 @@ def preprocess_dataset(dataset_path, target_size):
     dataset = dataset.map(lambda x: normalization_layer(x))
     return dataset
 
-preprocessed_dataset = preprocess_dataset(dataset_path, target_size)
-dataset_images = np.concatenate([batch for batch in preprocessed_dataset])
-dataset_embeddings = embedding_model.predict(dataset_images)
+# Prepare dataset for embeddings
+def prepare_dataset(embedding_model, dataset_path, target_size):
+    preprocessed_dataset = preprocess_dataset(dataset_path, target_size)
+    dataset_images = np.concatenate([batch for batch in preprocessed_dataset])
+    dataset_embeddings = embedding_model.predict(dataset_images)
+    return dataset_images, dataset_embeddings
 
-# Helper function to preprocess a single image
+# Preprocess a single image
 def preprocess_image(image, target_size=(28, 28)):
     img = Image.open(image)
     img = img.resize(target_size)
@@ -46,7 +55,7 @@ def preprocess_image(image, target_size=(28, 28)):
     img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
     return img_array
 
-# Helper function to find the closest embeddings
+# Find the closest embeddings
 def find_closest_embeddings(target_embedding, dataset_embeddings, dataset_images, k=5):
     distances = np.linalg.norm(dataset_embeddings - target_embedding, axis=1)
     closest_indices = np.argsort(distances)[:k]
@@ -56,23 +65,27 @@ def find_closest_embeddings(target_embedding, dataset_embeddings, dataset_images
 @app.route('/api/upload', methods=['POST'])
 @cross_origin(origin='*', headers=['Content-Type', 'Authorization'])
 def upload_image():
+    tf, _ = load_dependencies()
+    _, embedding_model = load_models()
+
+    # Dataset path and target size
+    dataset_path = os.getenv("DATASET_PATH", "default_dataset_path")  # Use env variable
+    target_size = (28, 28)
+
+    # Load the dataset and compute embeddings
+    dataset_images, dataset_embeddings = prepare_dataset(embedding_model, dataset_path, target_size)
+
     # Check if an image is uploaded
     if 'image' not in request.files:
         return jsonify({"error": "No image uploaded"}), 400
 
-    # Get the image file
+    # Preprocess and find matches
     image_file = request.files['image']
-    
-    # Preprocess the uploaded image
     preprocessed_image = preprocess_image(image_file, target_size)
-
-    # Generate embedding for the uploaded image
     target_embedding = embedding_model.predict(preprocessed_image)
-
-    # Find the closest embeddings
     closest_images = find_closest_embeddings(target_embedding, dataset_embeddings, dataset_images)
 
-    # Create a response with closest image data
+    # Prepare response
     results = []
     for i, (image_array, distance) in enumerate(closest_images):
         # Convert the image array to a PIL Image for response
@@ -85,4 +98,4 @@ def upload_image():
     return jsonify({"results": results})
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False)  # Disable debug mode for production
