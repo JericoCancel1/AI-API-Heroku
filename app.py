@@ -4,6 +4,7 @@ from io import BytesIO
 from PIL import Image
 import numpy as np
 import os
+import boto3
 
 app = Flask(__name__)
 CORS(app)
@@ -96,6 +97,52 @@ def upload_image():
         results.append({"index": i, "distance": float(distance)})
 
     return jsonify({"results": results})
+
+# Function to download dataset from S3
+def download_dataset(bucket_name, dataset_prefix, local_dir):
+    """Download dataset files from S3."""
+    s3 = boto3.client(
+        's3',
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+    )
+    os.makedirs(local_dir, exist_ok=True)
+    downloaded_files = []
+    paginator = s3.get_paginator('list_objects_v2')
+    for page in paginator.paginate(Bucket=bucket_name, Prefix=dataset_prefix):
+        for obj in page.get('Contents', []):
+            file_name = os.path.join(local_dir, obj['Key'].split('/')[-1])
+            s3.download_file(bucket_name, obj['Key'], file_name)
+            downloaded_files.append(file_name)
+            print(f"Downloaded {obj['Key']} to {file_name}")
+    return downloaded_files
+
+
+# Test route to download dataset from S3
+@app.route('/test-download', methods=['GET'])
+def test_download():
+    """Test downloading files from S3."""
+    try:
+        bucket_name = os.getenv("S3_BUCKET_NAME")
+        dataset_prefix = "siamese_model.h5"  # Update this to your dataset prefix in S3
+        local_dir = "/tmp/local_dataset"  # Use Heroku's temporary directory
+
+        # Call the download_dataset function
+        downloaded_files = download_dataset(bucket_name, dataset_prefix, local_dir)
+
+        # Return the list of downloaded files as a JSON response
+        return jsonify({
+            "message": "Files downloaded successfully",
+            "downloaded_files": downloaded_files
+        }), 200
+
+    except Exception as e:
+        # Return an error response in case of failure
+        return jsonify({
+            "message": "Failed to download files",
+            "error": str(e)
+        }), 500
+
 
 if __name__ == "__main__":
     app.run(debug=False)  # Disable debug mode for production
