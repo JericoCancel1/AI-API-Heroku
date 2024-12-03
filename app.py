@@ -9,6 +9,58 @@ import boto3
 app = Flask(__name__)
 CORS(app)
 
+@app.before_first_request
+def setup():
+    """Download necessary files when the app starts."""
+    bucket_name = os.getenv("S3_BUCKET_NAME")
+    model_file_key = "siamese_model.h5"  # S3 key for the model file
+    model_local_path = "/tmp/siamese_model.h5"  # Local path to store the model
+    
+    folder_prefix = "tables-20241203T011356Z-001/"  # S3 prefix for the folder
+    folder_local_dir = "/tmp/tables"  # Local directory to store the folder
+    
+    # Download the model file
+    download_file(bucket_name, model_file_key, model_local_path)
+    
+    # Download the folder
+    download_folder(bucket_name, folder_prefix, folder_local_dir)
+
+    print("Setup complete. Model and tables downloaded.")
+
+    def download_file(bucket_name, s3_key, local_path):
+    """Download a file from S3."""
+    s3 = boto3.client(
+        's3',
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+    )
+    
+    # Create the parent directories if they don't exist
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    
+    # Download the file from S3
+    s3.download_file(bucket_name, s3_key, local_path)
+    print(f"Downloaded {s3_key} to {local_path}")
+
+def download_folder(bucket_name, s3_prefix, local_dir):
+    """Download all files from an S3 folder."""
+    s3 = boto3.client(
+        's3',
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+    )
+    
+    os.makedirs(local_dir, exist_ok=True)  # Create the local folder if it doesn't exist
+    paginator = s3.get_paginator('list_objects_v2')
+    
+    # Iterate through the pages of objects in the S3 bucket
+    for page in paginator.paginate(Bucket=bucket_name, Prefix=s3_prefix, Delimiter='/'):
+        for obj in page.get('Contents', []):
+            file_name = os.path.join(local_dir, obj['Key'].split('/')[-1])
+            download_file(bucket_name, obj['Key'], file_name)
+    
+    print(f"Downloaded all files from {s3_prefix} to {local_dir}")
+
 @app.route('/')
 def index():
     return "Flask Heroku App"
