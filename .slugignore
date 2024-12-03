@@ -1,0 +1,10 @@
+*.log
+*.csv
+*.gz
+*.sqlite3
+*.pyc
+*.pyo
+*.md
+tests/
+docs/
+__pycache__/
