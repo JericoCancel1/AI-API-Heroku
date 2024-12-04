@@ -9,21 +9,17 @@ import boto3
 app = Flask(__name__)
 CORS(app)
 
+MODEL_FILE_KEY = "siamese_model.h5"  # S3 key for the model file
+MODEL_LOCAL_PATH = "/tmp/siamese_model.h5"  # Local path to store the model
+
+FOLDER_PREFIX = "tables-20241203T011356Z-001/tables/anchor"  # S3 prefix for the folder
+FOLDER_LOCAL_DIR = "/tmp/tables"  # Local directory to store the folder
+
 def setup():
     """Download necessary files when the app starts."""
     bucket_name = os.getenv("S3_BUCKET_NAME")
-    model_file_key = "siamese_model.h5"  # S3 key for the model file
-    model_local_path = "/tmp/siamese_model.h5"  # Local path to store the model
-    
-    folder_prefix = "tables-20241203T011356Z-001/"  # S3 prefix for the folder
-    folder_local_dir = "/tmp/tables"  # Local directory to store the folder
-    
-    # Download the model file
-    download_file(bucket_name, model_file_key, model_local_path)
-    
-    # Download the folder
-    download_folder(bucket_name, folder_prefix, folder_local_dir)
-
+    download_file(bucket_name, MODEL_FILE_KEY, MODEL_LOCAL_PATH)
+    download_folder(bucket_name, FOLDER_PREFIX, FOLDER_LOCAL_DIR)
     print("Setup complete. Model and tables downloaded.")
 
 def download_file(bucket_name, s3_key, local_path):
@@ -74,7 +70,7 @@ def load_dependencies():
 def load_models():
     tf, tfa = load_dependencies()
     custom_objects = {"Addons>TripletSemiHardLoss": tfa.losses.TripletSemiHardLoss}
-    siamese_model = tf.keras.models.load_model("siamese_model.h5", custom_objects=custom_objects)
+    siamese_model = tf.keras.models.load_model(MODEL_LOCAL_PATH, custom_objects=custom_objects)
     embedding_model = siamese_model.layers[3]  # Update this index as per your model
     return siamese_model, embedding_model
 
@@ -116,12 +112,13 @@ def find_closest_embeddings(target_embedding, dataset_embeddings, dataset_images
 # API route to process uploaded image
 @app.route('/api/upload', methods=['POST'])
 @cross_origin(origin='*', headers=['Content-Type', 'Authorization'])
-def upload_image():
-    tf, _ = load_dependencies()
-    _, embedding_model = load_models()
+def uploadimage():
+    """Handles image uploads, processes them, and returns matching results."""
+    tf,  = loaddependencies()
+    , embedding_model = load_models()  # Use the loaded model
 
-    # Dataset path and target size
-    dataset_path = os.getenv("DATASET_PATH", "default_dataset_path")  # Use env variable
+    # Use the global folder path for dataset
+    dataset_path = FOLDER_LOCAL_DIR
     target_size = (28, 28)
 
     # Load the dataset and compute embeddings
@@ -131,20 +128,26 @@ def upload_image():
     if 'image' not in request.files:
         return jsonify({"error": "No image uploaded"}), 400
 
-    # Preprocess and find matches
+    # Preprocess the uploaded image
     image_file = request.files['image']
     preprocessed_image = preprocess_image(image_file, target_size)
+
+    # Compute the embedding for the uploaded image
     target_embedding = embedding_model.predict(preprocessed_image)
+
+    # Find the closest matches
     closest_images = find_closest_embeddings(target_embedding, dataset_embeddings, dataset_images)
 
-    # Prepare response
+    # Prepare response with matching results
     results = []
     for i, (image_array, distance) in enumerate(closest_images):
-        # Convert the image array to a PIL Image for response
+        # Convert the image array to a PIL Image for the response
         image = Image.fromarray((image_array * 255).astype('uint8'))
         img_io = BytesIO()
         image.save(img_io, 'PNG')
         img_io.seek(0)
+
+        # Add the result
         results.append({"index": i, "distance": float(distance)})
 
     return jsonify({"results": results})
