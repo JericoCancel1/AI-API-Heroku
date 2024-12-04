@@ -27,7 +27,7 @@ def setup():
 
     print("Setup complete. Model and tables downloaded.")
 
-    def download_file(bucket_name, s3_key, local_path):
+def download_file(bucket_name, s3_key, local_path):
     """Download a file from S3."""
     s3 = boto3.client(
         's3',
