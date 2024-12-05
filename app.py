@@ -141,3 +141,4 @@ if __name__ == "__main__":
     print("Initializing resources...")
     setup()
     app.run(debug=False)  # Disable debug mode for production
+    #djfhaldbflasj
