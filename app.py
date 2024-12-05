@@ -5,101 +5,84 @@ from PIL import Image
 import numpy as np
 import os
 import boto3
+import tensorflow as tf
+import io
 
 app = Flask(__name__)
 CORS(app)
 
 MODEL_FILE_KEY = "siamese_model.h5"  # S3 key for the model file
-MODEL_LOCAL_PATH = "/tmp/siamese_model.h5"  # Local path to store the model
-
 FOLDER_PREFIX = "tables-20241203T011356Z-001/tables/anchor"  # S3 prefix for the folder
 FOLDER_LOCAL_DIR = "/tmp/tables"  # Local directory to store the folder
 
-def setup():
-    """Download necessary files when the app starts."""
+# Load model dynamically from S3
+def load_models():
+    """Load the TensorFlow model directly from S3."""
     bucket_name = os.getenv("S3_BUCKET_NAME")
-    download_file(bucket_name, MODEL_FILE_KEY, MODEL_LOCAL_PATH)
-    download_folder(bucket_name, FOLDER_PREFIX, FOLDER_LOCAL_DIR)
-    print("Setup complete. Model and tables downloaded.")
+    model_key = MODEL_FILE_KEY
 
-def download_file(bucket_name, s3_key, local_path):
-    """Download a file from S3."""
+    # Create an S3 client
     s3 = boto3.client(
-        's3',
+        "s3",
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
     )
-    
-    # Create the parent directories if they don't exist
-    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-    
+
     try:
-        # Download the file from S3
-        s3.download_file(bucket_name, s3_key, local_path)
-        print(f"Downloaded {s3_key} to {local_path}")
+        # Stream the model file from S3
+        print(f"Downloading model {model_key} from bucket {bucket_name}...")
+        model_object = s3.get_object(Bucket=bucket_name, Key=model_key)
+        model_data = model_object["Body"].read()
+        model_bytes = io.BytesIO(model_data)
+
+        # Load the model from the byte stream
+        custom_objects = {"Addons>TripletSemiHardLoss": tf.keras.losses.CategoricalCrossentropy}
+        siamese_model = tf.keras.models.load_model(model_bytes, custom_objects=custom_objects)
+
+        # Extract the embedding model (adjust index as needed)
+        embedding_model = siamese_model.layers[3]
+        print(f"Model {model_key} loaded successfully from S3.")
+        return siamese_model, embedding_model
+
     except Exception as e:
-        print(f"Failed to download {s3_key} from bucket {bucket_name}: {e}")
+        print(f"Error loading model from S3: {e}")
         raise
 
+# Download folder from S3
 def download_folder(bucket_name, s3_prefix, local_dir):
     """Download all files from an S3 folder."""
     s3 = boto3.client(
-        's3',
+        "s3",
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
     )
     
-    os.makedirs(local_dir, exist_ok=True)  # Create the local folder if it doesn't exist
+    os.makedirs(local_dir, exist_ok=True)  # Ensure the directory exists
     paginator = s3.get_paginator('list_objects_v2')
     
-    # Iterate through the pages of objects in the S3 bucket
-    for page in paginator.paginate(Bucket=bucket_name, Prefix=s3_prefix, Delimiter='/'):
-        for obj in page.get('Contents', []):
-            file_name = os.path.join(local_dir, obj['Key'].split('/')[-1])
-            download_file(bucket_name, obj['Key'], file_name)
-    
-    print(f"Downloaded all files from {s3_prefix} to {local_dir}")
+    try:
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=s3_prefix):
+            for obj in page.get('Contents', []):
+                file_name = os.path.join(local_dir, obj['Key'].split('/')[-1])
+                s3.download_file(bucket_name, obj['Key'], file_name)
+                print(f"Downloaded {obj['Key']} to {file_name}")
+        print(f"All files downloaded from {s3_prefix} to {local_dir}.")
+    except Exception as e:
+        print(f"Error downloading folder from S3: {e}")
+        raise
+
+# Setup function
+def setup():
+    """Download the folder resources at startup."""
+    bucket_name = os.getenv("S3_BUCKET_NAME")
+    download_folder(bucket_name, FOLDER_PREFIX, FOLDER_LOCAL_DIR)
+    print("Setup complete. Folder resources downloaded.")
 
 @app.route('/')
 def index():
     return "Flask Heroku App"
 
-# Load TensorFlow and other dependencies dynamically
-def load_dependencies():
-    import tensorflow as tf
-    import tensorflow_addons as tfa
-    return tf, tfa
-
-# Load models dynamically
-def load_models():
-    tf, tfa = load_dependencies()
-    custom_objects = {"Addons>TripletSemiHardLoss": tfa.losses.TripletSemiHardLoss}
-    siamese_model = tf.keras.models.load_model(MODEL_LOCAL_PATH, custom_objects=custom_objects)
-    embedding_model = siamese_model.layers[3]  # Update this index as per your model
-    return siamese_model, embedding_model
-
-# Preprocess dataset
-def preprocess_dataset(dataset_path, target_size):
-    tf, _ = load_dependencies()
-    dataset = tf.keras.utils.image_dataset_from_directory(
-        dataset_path,
-        labels=None,  # No labels needed
-        color_mode="rgb",
-        batch_size=32,
-        image_size=target_size
-    )
-    normalization_layer = tf.keras.layers.Rescaling(1.0 / 255)
-    dataset = dataset.map(lambda x: normalization_layer(x))
-    return dataset
-
-# Prepare dataset for embeddings
-def prepare_dataset(embedding_model, dataset_path, target_size):
-    preprocessed_dataset = preprocess_dataset(dataset_path, target_size)
-    dataset_images = np.concatenate([batch for batch in preprocessed_dataset])
-    dataset_embeddings = embedding_model.predict(dataset_images)
-    return dataset_images, dataset_embeddings
-
-# Preprocess a single image
+# Preprocess image
 def preprocess_image(image, target_size=(28, 28)):
     img = Image.open(image)
     img = img.resize(target_size)
@@ -107,7 +90,7 @@ def preprocess_image(image, target_size=(28, 28)):
     img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
     return img_array
 
-# Find the closest embeddings
+# Find closest embeddings
 def find_closest_embeddings(target_embedding, dataset_embeddings, dataset_images, k=5):
     distances = np.linalg.norm(dataset_embeddings - target_embedding, axis=1)
     closest_indices = np.argsort(distances)[:k]
@@ -118,15 +101,17 @@ def find_closest_embeddings(target_embedding, dataset_embeddings, dataset_images
 @cross_origin(origin='*', headers=['Content-Type', 'Authorization'])
 def upload_image():
     """Handles image uploads, processes them, and returns matching results."""
-    tf, _ = load_dependencies()  
-    _, embedding_model = load_models()  
+    # Load the model
+    _, embedding_model = load_models()
 
     # Use the global folder path for dataset
     dataset_path = FOLDER_LOCAL_DIR
     target_size = (28, 28)
 
-    # Load the dataset and compute embeddings
-    dataset_images, dataset_embeddings = prepare_dataset(embedding_model, dataset_path, target_size)
+    # Load and compute dataset embeddings
+    dataset_images = []  # Example placeholder for dataset images
+    dataset_embeddings = []  # Example placeholder for embeddings
+    # Populate these variables based on your application needs
 
     # Check if an image is uploaded
     if 'image' not in request.files:
@@ -156,55 +141,7 @@ def upload_image():
 
     return jsonify({"results": results})
 
-# Function to download dataset from S3
-def download_dataset(bucket_name, dataset_prefix, local_dir):
-    """Download dataset files from S3."""
-    s3 = boto3.client(
-        's3',
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
-    )
-    os.makedirs(local_dir, exist_ok=True)
-    downloaded_files = []
-    paginator = s3.get_paginator('list_objects_v2')
-    for page in paginator.paginate(Bucket=bucket_name, Prefix=dataset_prefix):
-        for obj in page.get('Contents', []):
-            file_name = os.path.join(local_dir, obj['Key'].split('/')[-1])
-            s3.download_file(bucket_name, obj['Key'], file_name)
-            downloaded_files.append(file_name)
-            print(f"Downloaded {obj['Key']} to {file_name}")
-    return downloaded_files
-
-
-# Test route to download dataset from S3
-@app.route('/test-download', methods=['GET'])
-def test_download():
-    """Test downloading files from S3."""
-    try:
-        bucket_name = os.getenv("S3_BUCKET_NAME")
-        dataset_prefix = "siamese_model.h5"  # Update this to your dataset prefix in S3
-        local_dir = "/tmp/local_dataset"  # Use Heroku's temporary directory
-
-        # Call the download_dataset function
-        downloaded_files = download_dataset(bucket_name, dataset_prefix, local_dir)
-
-        # Return the list of downloaded files as a JSON response
-        return jsonify({
-            "message": "Files downloaded successfully",
-            "downloaded_files": downloaded_files
-        }), 200
-
-    except Exception as e:
-        # Return an error response in case of failure
-        return jsonify({
-            "message": "Failed to download files",
-            "error": str(e)
-        }), 500
-
-
 if __name__ == "__main__":
-    # Initialize resources manually
-    print("Initialiazing resources...")
-    setup()
-
-    app.run(debug=False)  # Disable debug mode for production
+    print("Initializing resources...")
+    setup()  # Ensure the folder resources are downloaded
+    app.run(debug=False)  # Start the Flask app
