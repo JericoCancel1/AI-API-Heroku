@@ -33,9 +33,13 @@ def download_file(bucket_name, s3_key, local_path):
     # Create the parent directories if they don't exist
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
     
-    # Download the file from S3
-    s3.download_file(bucket_name, s3_key, local_path)
-    print(f"Downloaded {s3_key} to {local_path}")
+    try:
+        # Download the file from S3
+        s3.download_file(bucket_name, s3_key, local_path)
+        print(f"Downloaded {s3_key} to {local_path}")
+    except Exception as e:
+        print(f"Failed to download {s3_key} from bucket {bucket_name}: {e}")
+        raise
 
 def download_folder(bucket_name, s3_prefix, local_dir):
     """Download all files from an S3 folder."""
@@ -200,6 +204,7 @@ def test_download():
 
 if __name__ == "__main__":
     # Initialize resources manually
+    print("Initialiazing resources...")
     setup()
 
     app.run(debug=False)  # Disable debug mode for production
