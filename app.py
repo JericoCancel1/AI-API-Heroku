@@ -112,10 +112,10 @@ def find_closest_embeddings(target_embedding, dataset_embeddings, dataset_images
 # API route to process uploaded image
 @app.route('/api/upload', methods=['POST'])
 @cross_origin(origin='*', headers=['Content-Type', 'Authorization'])
-def uploadimage():
+def upload_image():
     """Handles image uploads, processes them, and returns matching results."""
-    tf,  = loaddependencies()
-    , embedding_model = load_models()  # Use the loaded model
+    tf, _ = load_dependencies()  
+    _, embedding_model = load_models()  
 
     # Use the global folder path for dataset
     dataset_path = FOLDER_LOCAL_DIR
