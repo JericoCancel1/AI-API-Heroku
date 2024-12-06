@@ -141,6 +141,20 @@ def upload_image():
 
         logger.info(f"Results JSON: {results}")
 
+        # Find the filename with the lowest distance
+        min_distance_item = min(results_json, key=lambda x: x['distance'])
+        min_filename = min_distance_item['filename']
+        logger.info(f"File with the lowest distance: {min_filename}")
+        min_file_number = min_filename.split('.')[0]
+
+        with open('tables.json', 'r') as file:
+            tables_data = json.load(file)
+
+        matching_entry = next((entry for entry in tables_data if entry['number'] == min_file_number), None)
+        if matching_entry:
+            logger.info(f"Final link: {link}")
+        else:
+            logger.error("No matching link found.")
 
         return jsonify({"results": results})
     except Exception as e:
